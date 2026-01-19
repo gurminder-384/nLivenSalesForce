@@ -5,14 +5,18 @@
 #TODO: Check if closeDate needs to be converted to local timezone.
 
 
-from simple_salesforce import Salesforce
-from datetime import datetime, timezone
+import jwt
+import requests
+import boto3
+from datetime import datetime, timezone, timedelta
 import logging
 import os
 import json
 import pytz
 import time
 from uszipcode import ZipcodeSearchEngine
+from cryptography.hazmat.primitives import serialization
+from cryptography.hazmat.backends import default_backend
 
 logger = logging.getLogger()
 logger.setLevel(logging.INFO)
@@ -25,6 +29,149 @@ def respond(err, res=None):
             'Content-Type': 'application/json',
         },
     }
+
+
+def get_salesforce_token():
+    """Authenticate to Salesforce using JWT Bearer Token flow"""
+    # Get credentials from Secrets Manager
+    secrets_client = boto3.client('secretsmanager')
+    secret_response = secrets_client.get_secret_value(
+        SecretId='salesforce/lambda-credentials'
+    )
+    credentials = json.loads(secret_response['SecretString'])
+    
+    # Load private key
+    private_key_pem = credentials['private_key']
+    if isinstance(private_key_pem, str):
+        # If stored as string, ensure it's properly formatted
+        private_key = serialization.load_pem_private_key(
+            private_key_pem.encode('utf-8'),
+            password=None,
+            backend=default_backend()
+        )
+    else:
+        private_key = private_key_pem
+    
+    # Generate JWT
+    payload = {
+        'iss': credentials['consumer_key'],
+        'sub': credentials['username'],
+        'aud': credentials.get('instance_url', 'https://login.salesforce.com'),
+        'exp': int((datetime.utcnow() + timedelta(minutes=3)).timestamp())
+    }
+    
+    assertion = jwt.encode(payload, private_key, algorithm='RS256')
+    
+    # Request access token
+    token_url = f"{credentials.get('instance_url', 'https://login.salesforce.com')}/services/oauth2/token"
+    response = requests.post(
+        token_url,
+        data={
+            'grant_type': 'urn:ietf:params:oauth:grant-type:jwt-bearer',
+            'assertion': assertion
+        }
+    )
+    
+    if response.status_code == 200:
+        token_data = response.json()
+        return {
+            'access_token': token_data['access_token'],
+            'instance_url': token_data['instance_url']
+        }
+    else:
+        logger.error(f"Salesforce authentication failed: {response.text}")
+        raise Exception(f"Salesforce authentication failed: {response.status_code}")
+
+
+class SalesforceAPI:
+    def __init__(self, access_token, instance_url):
+        self.access_token = access_token
+        self.instance_url = instance_url
+        self.headers = {
+            'Authorization': f'Bearer {access_token}',
+            'Content-Type': 'application/json'
+        }
+        self.Account = self.Account(self)
+        self.Opportunity = self.Opportunity(self)
+        self.Order_Item__c = self.Order_Item__c(self)
+        self.Venue__c = self.Venue__c(self)
+    
+    def query_all(self, soql):
+        """Execute SOQL query"""
+        url = f"{self.instance_url}/services/data/v57.0/queryAll"
+        params = {'q': soql}
+        response = requests.get(url, headers=self.headers, params=params)
+        response.raise_for_status()
+        return response.json()
+    
+    def query(self, soql):
+        """Execute SOQL query (non-queryAll)"""
+        url = f"{self.instance_url}/services/data/v57.0/query"
+        params = {'q': soql}
+        response = requests.get(url, headers=self.headers, params=params)
+        response.raise_for_status()
+        return response.json()
+    
+    class Account:
+        def __init__(self, parent):
+            self.parent = parent
+        
+        def get(self, account_id):
+            url = f"{self.parent.instance_url}/services/data/v57.0/sobjects/Account/{account_id}"
+            response = requests.get(url, headers=self.parent.headers)
+            response.raise_for_status()
+            return response.json()
+        
+        def create(self, data):
+            url = f"{self.parent.instance_url}/services/data/v57.0/sobjects/Account"
+            response = requests.post(url, headers=self.parent.headers, json=data)
+            response.raise_for_status()
+            return response.json()
+        
+        def update(self, account_id, data):
+            url = f"{self.parent.instance_url}/services/data/v57.0/sobjects/Account/{account_id}"
+            response = requests.patch(url, headers=self.parent.headers, json=data)
+            return response.status_code  # Returns 204 on success
+    
+    class Opportunity:
+        def __init__(self, parent):
+            self.parent = parent
+        
+        def create(self, data):
+            url = f"{self.parent.instance_url}/services/data/v57.0/sobjects/Opportunity"
+            response = requests.post(url, headers=self.parent.headers, json=data)
+            response.raise_for_status()
+            return response.json()
+        
+        def update(self, opp_id, data):
+            url = f"{self.parent.instance_url}/services/data/v57.0/sobjects/Opportunity/{opp_id}"
+            response = requests.patch(url, headers=self.parent.headers, json=data)
+            return response.status_code
+    
+    class Order_Item__c:
+        def __init__(self, parent):
+            self.parent = parent
+        
+        def create(self, data):
+            url = f"{self.parent.instance_url}/services/data/v57.0/sobjects/Order_Item__c"
+            response = requests.post(url, headers=self.parent.headers, json=data)
+            response.raise_for_status()
+            return response.json()
+        
+        def update(self, item_id, data):
+            url = f"{self.parent.instance_url}/services/data/v57.0/sobjects/Order_Item__c/{item_id}"
+            response = requests.patch(url, headers=self.parent.headers, json=data)
+            return response.status_code
+    
+    class Venue__c:
+        def __init__(self, parent):
+            self.parent = parent
+        
+        def get(self, venue_id):
+            url = f"{self.parent.instance_url}/services/data/v57.0/sobjects/Venue__c/{venue_id}"
+            response = requests.get(url, headers=self.parent.headers)
+            response.raise_for_status()
+            return response.json()
 
 
 def lambda_handler(event, context):
@@ -58,13 +205,15 @@ def lambda_handler(event, context):
             countries = {'AE':'United Arab Emirates', 'AF':'Afghanistan', 'AL':'Albania', 'AM':'Armenia', 'AR':'Argentina', 'AT':'Austria', 'AU':'Australia', 'AW':'Aruba', 'AX':'Aland Islands', 'BD':'Bangladesh', 'BE':'Belgium', 'BG':'Bulgaria', 'BM':'Bermuda', 'BN':'Brunei Darussalam', 'BR':'Brazil', 'BS':'Bahamas', 'BW':'Botswana', 'CA':'Canada', 'CG':'Congo', 'CH':'Switzerland', 'CI':"Cote d'Ivoire", 'CL':'Chile', 'CN':'China', 'CO':'Colombia', 'CR':'Costa Rica', 'CY':'Cyprus', 'CZ':'Czech Republic', 'DE':'Germany', 'DK':'Denmark', 'DO':'Dominican Republic', 'DZ':'Algeria', 'EC':'Ecuador', 'EE':'Estonia', 'EG':'Egypt', 'ES':'Spain', 'ET':'Ethiopia', 'FI':'Finland', 'FJ':'Fiji', 'FR':'France', 'GB':'United Kingdom', 'GE':'Georgia', 'GH':'Ghana', 'GI':'Gibraltar', 'GL':'Greenland', 'GR':'Greece', 'GT':'Guatemala', 'HN':'Honduras', 'HR':'Croatia', 'HT':'Haiti', 'HU':'Hungary', 'ID':'Indonesia', 'IE':'Ireland', 'IL':'Israel', 'IN':'India', 'IQ':'Iraq', 'IS':'Iceland', 'IT':'Italy', 'JM':'Jamaica', 'JO':'Jordan', 'JP':'Japan', 'KE':'Kenya', 'KR':'Korea, South', 'KW':'Kuwait', 'KY':'Cayman Islands', 'LB':'Lebanon', 'LI':'Liechtenstein', 'LK':'Sri Lanka', 'LR':'Liberia', 'LT':'Lithuania', 'LU':'Luxembourg', 'LV':'Latvia', 'LY':'Libya', 'MA':'Morocco', 'MM':'Myanmar', 'MN':'Mongolia', 'MO':'Macao', 'MT':'Malta', 'MX':'Mexico', 'MY':'Malaysia', 'NE':'Niger', 'NG':'Nigeria', 'NI':'Nicaragua', 'NL':'Netherlands', 'NO':'Norway', 'NZ':'New Zealand', 'PA':'Panama', 'PE':'Peru', 'PF':'French Polynesia', 'PH':'Philippines', 'PK':'Pakistan', 'PL':'Poland', 'PS':'Palestine', 'PT':'Portugal', 'PY':'Paraguay', 'QA':'Qatar', 'RO':'Romania', 'RS':'Serbia', 'RU':'Russia', 'SA':'Saudi Arabia', 'SE':'Sweden', 'SG':'Singapore', 'SI':'Slovenia', 'SK':'Slovakia', 'SV':'El Salvador', 'TH':'Thailand', 'TN':'Tunisia', 'TR':'Turkey', 'TT':'Trinidad and Tobago', 'UA':'Ukraine', 'US':'United States', 'UY':'Uruguay', 'UZ':'Uzbekistan', 'VE':'Venezuela', 'VN':'Viet Nam', 'ZA':'South Africa', 'GU':'Guam', 'HK':'Hong Kong', 'PR':'Puerto Rico', 'TW':'Taiwan'}
 
             try:
-                #Sandbox
-                #sf = Salesforce(username='sslabicki@nederlander.com.justinpart', password = 'Neder2021', security_token='5Mr15YY8pkclxMilCetvN8qa', sandbox = True, client_id='LambdaPy')
-                #Production
-                sf = Salesforce(username='kyle.bowerman@atrium.ai', password = 'Bozeman1972!', security_token='Sbfdp4OcsDGwV3662OfHUkLx', client_id='LambdaPy')
-                logger.info('SUCCESS: Connection to Salesforce established.')
-            except:
-                logger.error("ERROR: Unexpected Error: Could not connect to Salesforce.")
+                # Authenticate using JWT Bearer Token flow
+                token_info = get_salesforce_token()
+                sf_access_token = token_info['access_token']
+                sf_instance_url = token_info['instance_url']
+                sf = SalesforceAPI(sf_access_token, sf_instance_url)
+                logger.info('SUCCESS: Connection to Salesforce established via JWT.')
+            except Exception as e:
+                logger.error(f"ERROR: Could not connect to Salesforce: {str(e)}")
+                raise
 
             event = data.get('event')
             order_items = data.get('orderItems')
