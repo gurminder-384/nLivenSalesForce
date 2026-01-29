@@ -1,0 +1,6 @@
+{
+  "headers": {
+    "Authorization": "Bearer YOUR_SECRET_KEY"
+  },
+  "body": "{\"webhookType\":\"OrderCreated\",\"data\":{\"id\":\"test123\",\"customer\":{\"email\":\"test@example.com\",\"firstName\":\"Test\",\"lastName\":\"User\"},\"salesChannel\":\"Web\",\"eventId\":\"event123\",\"total\":100,\"ticketQty\":2,\"deliveryMethodName\":\"Will Call\",\"localCreated\":\"2024-01-01T12:00:00\",\"paymentMethodName\":\"Credit Card\",\"orderStatus\":\"Completed\",\"billToAddress1\":\"123 Main St\",\"billToCity\":\"New York\",\"billToPostalCode\":\"10001\",\"billToCountryCode\":\"US\",\"event\":{\"name\":\"Test Show\",\"localDate\":\"2024-01-01T20:00:00\",\"date\":\"2024-01-01T20:00:00\",\"alternateName\":\"Test Performance\",\"externalEventId\":\"EXT123\"},\"venue\":{\"name\":\"Palace Theatre\"},\"orderItems\":[]}}"
+}

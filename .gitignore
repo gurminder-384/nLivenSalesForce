@@ -10,6 +10,7 @@ venv/
 .venv/
 lambda_function_backup.zip
 lambda_function_updated.zip
+lambda_function_salesforce_client_credentials.zip
 deploy/
 *.dist-info/
 *.Zone.Identifier
@@ -17,3 +18,5 @@ deploy/
 *.pem
 *.key
 *.crt
+*.old
+tests/__pycache__/

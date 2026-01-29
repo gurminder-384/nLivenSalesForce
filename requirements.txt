@@ -1,6 +1,2 @@
-PyJWT==2.8.0
-cryptography==41.0.7
 requests==2.31.0
-pytz==2023.3
-uszipcode==1.0.1
 boto3==1.34.0
